@@ -63,7 +63,7 @@ function createMockFetch(outputContentType = "image/png") {
       ok: true,
       status: 200,
       headers: new Headers({ "content-type": outputContentType, "content-length": "8" }),
-      arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer,
+      body: new Response(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])).body,
     } as unknown as Response;
   });
 }
@@ -192,5 +192,62 @@ describe("generateWithAtlas", () => {
     const result = await generateWithAtlas("req-6", "test-key", makeInput());
     expect(result.success).toBe(false);
     expect(result.error).toContain("content policy");
+  });
+
+  it("ignores a lookalike poll URL host and polls the real API host", async () => {
+    const polled: string[] = [];
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("/generateImage")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: { id: "pred-7", urls: { get: "https://api.atlascloud.ai.attacker.example/poll" } },
+          }),
+        } as Response;
+      }
+      if (urlStr.includes("/prediction/") || urlStr.includes("attacker")) {
+        polled.push(urlStr);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { status: "failed", error: "stop" } }),
+        } as Response;
+      }
+      throw new Error(`unexpected ${urlStr}`);
+    }) as unknown as typeof fetch;
+
+    await generateWithAtlas("req-7", "test-key", makeInput());
+    expect(polled).toHaveLength(1);
+    expect(new URL(polled[0]).hostname).toBe("api.atlascloud.ai");
+  });
+
+  it("rejects an output stream that exceeds the size cap without Content-Length", async () => {
+    const cancel = vi.fn(async () => undefined);
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("/generateImage")) {
+        return { ok: true, status: 200, json: async () => ({ data: { id: "pred-8" } }) } as Response;
+      }
+      if (urlStr.includes("/prediction/")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { status: "completed", outputs: ["https://cdn.example/big.bin"] } }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "image/png" }),
+        body: { getReader: () => ({ read: async () => ({ done: false, value: { byteLength: 600 * 1024 * 1024 } }), cancel }) },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await generateWithAtlas("req-8", "test-key", makeInput());
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Media too large");
+    expect(cancel).toHaveBeenCalled();
   });
 });

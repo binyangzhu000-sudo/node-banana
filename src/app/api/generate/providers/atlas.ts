@@ -46,6 +46,22 @@ const ATLAS_API_BASE = "https://api.atlascloud.ai/api/v1/model";
 // does not need it.
 const ATLAS_USER_AGENT = "node-banana/1";
 const ATLAS_MAX_MEDIA_SIZE = 500 * 1024 * 1024; // 500MB, matching the other providers
+const ATLAS_API_HOST = "api.atlascloud.ai";
+// Per-request ceilings so one stalled connection cannot outlive the 10-minute
+// polling deadline (which is only checked between requests).
+const ATLAS_SUBMIT_TIMEOUT_MS = 60 * 1000;
+const ATLAS_POLL_TIMEOUT_MS = 30 * 1000;
+const ATLAS_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** True only for an https URL whose hostname is exactly the Atlas API host. */
+function isAtlasApiUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === "https:" && parsed.hostname === ATLAS_API_HOST;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Generate image/video using Atlas Cloud
@@ -136,6 +152,7 @@ export async function generateWithAtlas(
       "User-Agent": ATLAS_USER_AGENT,
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(ATLAS_SUBMIT_TIMEOUT_MS),
   });
 
   if (!submitResponse.ok) {
@@ -180,7 +197,7 @@ export async function generateWithAtlas(
   let providedPollUrl: string | undefined = submitResult.data?.urls?.get;
   if (providedPollUrl) {
     const pollUrlCheck = validateMediaUrl(providedPollUrl);
-    if (!pollUrlCheck.valid || !providedPollUrl.startsWith("https://api.atlascloud.ai")) {
+    if (!pollUrlCheck.valid || !isAtlasApiUrl(providedPollUrl)) {
       console.warn(`[API:${requestId}] Atlas provided invalid poll URL: ${providedPollUrl} — falling back to constructed URL`);
       providedPollUrl = undefined;
     }
@@ -215,6 +232,7 @@ export async function generateWithAtlas(
           Authorization: `Bearer ${apiKey}`,
           "User-Agent": ATLAS_USER_AGENT,
         },
+        signal: AbortSignal.timeout(ATLAS_POLL_TIMEOUT_MS),
       });
 
       const elapsedSec = Math.round((Date.now() - startTime) / 1000);
@@ -293,24 +311,49 @@ export async function generateWithAtlas(
 
   console.log(`[API:${requestId}] Fetching Atlas output from: ${outputUrl.substring(0, 80)}...`);
 
-  const outputResponse = await fetch(outputUrl);
-  if (!outputResponse.ok) {
-    return {
-      success: false,
-      error: `Failed to fetch output: ${outputResponse.status}`,
-    };
+  const downloadSignal = AbortSignal.timeout(ATLAS_DOWNLOAD_TIMEOUT_MS);
+  let outputResponse: Response;
+  let outputBuffer: Buffer;
+  try {
+    outputResponse = await fetch(outputUrl, { signal: downloadSignal });
+    if (!outputResponse.ok) {
+      return {
+        success: false,
+        error: `Failed to fetch output: ${outputResponse.status}`,
+      };
+    }
+
+    const declaredLength = parseInt(outputResponse.headers.get("content-length") || "0", 10);
+    if (!isNaN(declaredLength) && declaredLength > ATLAS_MAX_MEDIA_SIZE) {
+      return { success: false, error: `Media too large: ${(declaredLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
+    }
+
+    // Read through a size-capped stream so a missing or wrong Content-Length
+    // cannot make us buffer an unbounded body before the limit is checked.
+    const reader = outputResponse.body?.getReader();
+    if (!reader) {
+      return { success: false, error: `${input.model.name}: Output response had no body` };
+    }
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > ATLAS_MAX_MEDIA_SIZE) {
+        await reader.cancel().catch(() => undefined);
+        return { success: false, error: `Media too large: > 500MB limit` };
+      }
+      chunks.push(value);
+    }
+    outputBuffer = Buffer.concat(chunks, received);
+  } catch (downloadError) {
+    const message = downloadError instanceof Error ? downloadError.message : String(downloadError);
+    console.error(`[API:${requestId}] Atlas output download failed: ${message}`);
+    return { success: false, error: `${input.model.name}: Failed to download output: ${message}` };
   }
 
-  const declaredLength = parseInt(outputResponse.headers.get("content-length") || "0", 10);
-  if (!isNaN(declaredLength) && declaredLength > ATLAS_MAX_MEDIA_SIZE) {
-    return { success: false, error: `Media too large: ${(declaredLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
-
-  const outputArrayBuffer = await outputResponse.arrayBuffer();
-  if (outputArrayBuffer.byteLength > ATLAS_MAX_MEDIA_SIZE) {
-    return { success: false, error: `Media too large: ${(outputArrayBuffer.byteLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
-  const outputSizeMB = outputArrayBuffer.byteLength / (1024 * 1024);
+  const outputSizeMB = outputBuffer.byteLength / (1024 * 1024);
 
   // The container is not fixed per model — the same Atlas model returned PNG on
   // one call and JPEG on the next — so trust the response header, then the
@@ -334,7 +377,7 @@ export async function generateWithAtlas(
     };
   }
 
-  const outputBase64 = Buffer.from(outputArrayBuffer).toString("base64");
+  const outputBase64 = outputBuffer.toString("base64");
 
   console.log(`[API:${requestId}] SUCCESS - Returning ${isVideoModel ? "video" : "image"}`);
 

@@ -117,6 +117,7 @@ const PROVIDER_ROWS: { id: ProviderType; name: string; placeholder: string; desc
   { id: "fal", name: "fal.ai", placeholder: "..." },
   { id: "kie", name: "Kie.ai", placeholder: "..." },
   { id: "wavespeed", name: "WaveSpeed", placeholder: "..." },
+  { id: "atlas", name: "Atlas Cloud", placeholder: "apikey-..." },
 ];
 
 const PAN_MODES: SegmentedOption<PanMode>[] = [
@@ -532,7 +533,7 @@ export function ProjectSetupModal({
 
   const handleSaveProviders = () => {
     // Save each provider's settings
-    const providerIds: ProviderType[] = ["gemini", "openai", "anthropic", "replicate", "fal", "kie", "wavespeed", "comfy"];
+    const providerIds: ProviderType[] = ["gemini", "openai", "anthropic", "replicate", "fal", "kie", "wavespeed", "comfy", "atlas"];
     for (const providerId of providerIds) {
       const local = localProviders.providers[providerId];
       const current = providerSettings.providers[providerId];
