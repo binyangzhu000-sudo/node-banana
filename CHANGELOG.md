@@ -6,6 +6,134 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-15
+
+### Added
+
+- **Nano Banana 2.1 on Gemini** — Google's Nano Banana 2.1 joins the Generate Image node's Gemini models, at 1K, 2K or 4K, with Nano Banana 2's wide 1:4 to 8:1 ratios and its Google and Image Search grounding, from $0.034 an image. The node, the split-grid editor, the Gemini request and the agent now read each Gemini model's settings from one table.
+- **Comfy Router models brought up to date** — Nano Banana 2.1; Pika's own routes for Nano Banana Pro, Nano Banana 2, GPT Image 2, Pika 2.5 (text and image to video) and Seedance 2.0; and Higgsfield's Genjutsu Motion Transfer, which recasts a video with up to eight reference images. Imagen 3, Imagen 3 Fast, Veo 3 and Veo 3 Fast, which the Router no longer serves, are gone.
+
+### Fixed
+
+- **"Keys could not be saved securely: Invalid credential field"** — On the desktop, entering the Comfy key under Settings → Providers refused the whole save, and with it any other key saved at the same time, because the secure store did not know that provider's name. It does now.
+
+## [2.1.0] - 2026-10-12
+
+Windows is back, the agent grows a full-page chat that runs workflows and
+looks at their results, ComfyUI workflows arrive with their prompts and keep
+their history, video players get sound, the canvas pans and drags more
+smoothly, and a run no longer fails on a provider's passing error.
+
+### Added
+
+- **Windows** — The x64 installer (Windows 10 or later) returns, after the canvas performance pass was measured on Windows and the window chrome fixed: the caption buttons take clicks again, the window resizes from its top edge, and recovery checkpoints no longer stall input. The installer is unsigned, so SmartScreen warns on first run; updates install silently afterwards.
+
+- **Full-page agent chat** — The floating window expands into a full-page chat (bare `C`): the workflow the agent built shown as a minimap with **Open in canvas**, a workflow built from scratch named and saved, tool calls folded under one line, a Copy button under each reply, and the conversation sidebar.
+- **Runs from the chat** — The agent never starts a run itself. When asked, `run_workflow` sets up a Run card scoped to the whole workflow, a group, the changed nodes or from a node, with a run count and options; a turn that builds runnable nodes ends with the card too. Progress and then the results show in the chat as previews with the full-screen viewer; a result can be attached to the next message.
+- **The agent sees results** — `view_outputs` shows the agent what the nodes generated, read from the library, so it can judge a result and change the workflow accordingly.
+- **Prompts come with the workflow** — Attaching a ComfyUI workflow to a node adds a Prompt node for each text input the workflow was saved with text in, holding that text and wired to its handle. A workflow whose system prompt or example prompt matters runs as its author meant the first time.
+- **Comfy app builder** — The import dialog's preview is the node as the canvas draws it, with more room; **Replace workflow** sits in the node header's menu; a seed setting says what it will do after each run; the dialog's gear opens Settings at its ComfyUI page.
+- **Sound in video players** — Every scrub row has a sound button after the time readout. Videos were always muted; now the button turns sound on for every player and remembers it, pins the video so it keeps playing, and opens a volume slider when the pointer rests on it. Hover previews stay silent.
+- **Low detail when zoomed out (trial)** — Below 25% zoom a node draws as a light card, so a large canvas pans and zooms without re-laying out every node; a click on the card selects the node, an edit in progress survives zooming out, and a running node still shows it. The threshold and the feature are in Settings › Canvas. A performance overlay (`node-banana-perf-overlay`) shows frame figures for diagnosis.
+
+### Changed
+
+- **Canvas performance** — React Flow 12.11.2; a press that becomes a pan or a node drag captures the pointer; a node drag's moves reach the store when it drops, not every frame; edges stop taking the pointer and the empty canvas is not text-selectable mid-gesture, so a pan stops hit-testing; interaction rules restyle only what they change; nodes leaving the view mid-pan keep their component until the canvas settles; edge store slices, socket connection lookups, node width lookups and portal containers are cached. Measured with the new performance runner (`npm run electron:performance`, `docs/canvas-performance.md`).
+- **Desktop, off the main thread** — Recovery checkpoints and window bounds are written asynchronously and never mid-drag, media chunks are hashed off the UI thread, and thumbnails are decoded off the main thread a few at a time. On Windows the caption buttons take clicks again and the window resizes from its top edge.
+- **Media viewer** — The rail shows the whole prompt.
+- **Website** — Vercel Web Analytics, with a Download event per installer click.
+
+### Fixed
+
+- **Spinners after a failed run** — When one node failed, the nodes running beside it kept their running animation: the run had cut them off, and nothing put them back. A run that ends early, by a failure or by Stop, now settles every node it started.
+- **Passing provider errors are retried** — A 502, 503 or 504, a dropped connection, or Gemini's "model overloaded" no longer fails a run on the first try. The submit of a generation (Comfy Router, Kie, fal, Replicate, WaveSpeed, OpenAI, Gemini) and the LLM calls are asked again, up to three times with a short backoff, honouring Retry-After. A Comfy Router submit carries the same idempotency key on every try, so a retry can never queue a run twice. Rate limits and refusals are reported as before.
+- **Comfy app history** — A node made from a ComfyUI workflow kept only its last result. It now has the same carousel as the image and video nodes: every run is kept, and the arrows under the picture go back through them, restoring each output the run produced.
+- **ElevenLabs on ComfyUI** — The ElevenLabs voices and sound effects served by Comfy Router failed with "cannot run this model on the queued route yet (not_enabled)": the Router's queue cannot store a partner's raw audio bytes. Those models now run on their own route in one request and the audio comes straight back.
+- **fal.ai settings** — A fal.ai model's settings card could come up blank, with no message, after the model browser had just been opened: fal's model API rate-limits bursts, the app read a refusal as "no settings" and remembered it for two days. The settings and the generate path now share one schema lookup per model, a rate limit is waited out and retried, a refusal shows its reason on the node with a Retry, and nothing empty is remembered.
+- **Canvas** — A marquee near the canvas edge no longer pans it; Lock canvas locks the nodes again on React Flow 12.11; the canvas shows store changes during a node drag, and a drag React Flow aborts hands the edges and culling back; the running comet's own pause rule during a pan is gone.
+- **Agent** — Opening another workflow while a turn runs asks first and stops the turn; a turn's queued steps fit only its own canvas, and Stop reaches them; a deleted conversation stays deleted; sidebar times follow the calendar; the chat view's keys are its own; an earlier run's audio keeps playing when the node makes something new; results the library had under another lookup are found.
+
+## [2.0.0] - 2026-10-04
+
+The desktop release. Node Banana is now an installable app for Mac (Apple
+Silicon) that keeps itself up to date (Windows coming soon), with an agent that
+builds workflows on your own Claude Code or Codex subscription, a library that
+keeps everything you generate, and every node rebuilt on one anatomy.
+
+### Added
+
+- **Desktop app** — A signed and notarised Mac app (Apple Silicon, macOS 13 or later; DMG and ZIP). The app runs its own local server, bound to 127.0.0.1 and answering only its own window; keeps provider keys encrypted in the OS profile, with an explicit import from `.env`; remembers its windows and tabs; recovers tabs and media after a crash; and restarts its backend without losing the graph. Releases are built from a `v<version>` tag into a draft release with SHA-256 checksums. A Windows x64 installer was part of this release for a few hours and was withdrawn: slow and buggy, it returns in a later release once it runs as well as the Mac app.
+- **Automatic updates** — The app checks GitHub Releases 15 seconds after launch, every six hours and from Help → Check for Updates…, downloads on request, installs on **Restart to update** or at the next quit, and remembers a skipped version.
+- **Agent** — A chat window in the canvas's top-right corner that creates workflows, edits the canvas and changes node settings through its own tools. Every turn runs on your Claude Code or Codex (ChatGPT) login through the vendor's CLI, never on API credits, and stops rather than spend extra usage. It works from the selection, keeps preferences stated earlier in the conversation, queues messages sent while it works, lines new nodes up with the cluster they join, shimmers the nodes it changed, keeps a history of conversations, and reads a prompting guide for the node's modality and model before writing a prompt; **Look up prompting tips** runs a web research turn and saves the notes for that model. **Start with Agent** replaces Prompt a workflow.
+- **Asset library** — Everything generated or edited is saved as it is made into the Node Banana folder (Documents by default) and indexed for the Assets view (`A`): a grid with filters, favourites, tags, trash and restore, a full-screen detail with the run that made each asset, and a jump to its workflow or project. Projects saved by name live in that folder; existing project folders are found, offered and moved in. Settings → Library shows the location, storage and cleanup.
+- **Batch runs** — A Runs stepper in the Run menu runs a workflow, or a group from its menu, up to 50 times in a row; every output says which run made it; Stop lets the current run finish and a second press stops now. The multi-select toolbar has its own Run, and several nodes can be run at once from their own buttons.
+- **Saving** — Cmd/Ctrl+S saves (File › Save on the desktop) and works inside a node's text field. Autosave follows the edits: 3 s after the last change, at the latest 30 s after the first, never mid-run, and at once when the window loses focus; **Save automatically** turns it off.
+- **Noodles** — Labels on connections; hide connections without losing them (hidden ones collapse into a pill at each end that can be renamed and jumped from, and a new one joins its handle's labelled stack); bundle parallel connections into one trunk with a clamp you can move; re-plug a connection by dragging its end; marquee-select noodles; and style, thickness, faded opacity, gradient and loading pulse in the Canvas tab. While a node runs, a comet travels along the noodles into it.
+- **Canvas** — An arrange menu with a live spacing slider and grid, horizontal and vertical stacks; a navigator card holding the minimap and controls, with click-to-navigate; a floating menu in place of the header and browser-style tabs; groups in calmer Earth hues with a swatch menu; node search gestures; key caps in the shortcuts dialog; Shift+D adds a Generate 3D node and Shift+O an Output node. Loading a workflow frames its graph.
+- **Model browser** — Loads every provider's list once and filters, searches and tabs it locally, with **Search Replicate and fal.ai** for a deeper search, provider notices you can dismiss, an on-disk catalog refreshed behind the request, Replicate built from its curated collections, and a model change applied to a whole selection of generators.
+- **Models** — GPT Image 2.5 with OpenAI's image controls and multiple references; Gemini Omni video through the Interactions API; one catalogue for text models with the current lists (Sonnet 5.5 among them); and the Comfy Router catalog brought up to date: FLUX 3 Image (up to 10 reference images, with search grounding), Ideogram 4.5 (source images and a mask), Seedream 5.0 Flash, Eleven v4 and Eleven v4 Turbo, and Grok Imagine Video 1.5 Lite. FLUX.1 Canny and Depth, which the Router no longer serves, are gone.
+- **Media** — A full-screen viewer for the recent-generations drop-down and the output gallery (stage, filmstrip, details rail, add to graph); video plays on hover; the output gallery resizes vertically; the Split Grid cell editor builds a per-cell pipeline from any node type, video included.
+- **Landing page** — [nodebanana.app](https://nodebanana.app/) with the download buttons, a social preview image, a FAQ, `/download/mac` and `/download/windows` resolving to the latest installers, a sitemap, `llms.txt`, and a phone layout of its own.
+- **Marquee** — A marquee takes a node once it holds the node's media card whole, controls card or not; a node without a media card is taken whole, as before.
+
+### Changed
+
+- **Node redesign** — Every node is now built from the same anatomy: a media card that shows images, video, audio and text at their native proportions with the sockets set into its border, a gap row for history navigation or a scrubber, and a detached controls card beneath with a summary row (provider, model, key values) that opens into a single column of tight fields. Selection, running and error outlines live on the media card only. Node height is derived from content; nodes are resized by width only, and double-clicking a resize edge restores the type's default width.
+- **Sockets** — Handles are now swells in the media card's border at a fixed pitch, with a hole that fills in the type colour when connected. Handle ids are unchanged, so saved workflows keep their connections.
+- **Settings in the node** — Every generation node carries its own settings, so the side settings rail and the "Show model settings on nodes" preference are gone. The ease-curve editor and presets moved into the Ease Curve node.
+- **Logic nodes** — Router, Switch, Conditional Switch and Array are single cards with their rows laid out at the socket pitch.
+
+- **One Comfy key** — The key in Settings → Providers is the one Comfy key: Comfy Cloud runs, partner nodes and Comfy Router all use it. A key an older build stored on the ComfyUI tab is moved there on start.
+- **Local server boundary** — The web build listens on 127.0.0.1 unless `HOST` says otherwise, refuses cross-site requests to its API and a non-loopback `Host` while on loopback, and sends `COMFY_API_KEY` only to the engine the environment configures. The unused image optimizer is off. Next.js 16.3.8, sharp 0.35.5 and the flagged transitive dependencies are patched; `npm audit --omit=dev` is clean. The audit and what landed from it are in `docs/codebase-audit.md`.
+- **Chrome** — Icons on Lucide; custom dropdowns replace every native select; dialogs share one split layout at a compact scale; the node header is quiet with a kebab menu; only user-typed labels sit on noodles; a missing input skips its node instead of blocking Run.
+- **Lint** — `npm run lint` is ESLint with Next's rules again (Next 16 removed `next lint`), and `npm run typecheck` checks the app without its tests.
+
+### Removed
+
+- The `ControlPanel` rail, the inline-parameters preference, the aspect-fit resize gesture and per-node height writes.
+- The labels setting (labels are the ones you type), the Source filter in Assets, and the header bar (the floating menu replaced it).
+
+### Fixed
+
+- **Agent** — A call that left an optional argument out was rejected with "expected nonoptional", so the agent could not read or tidy the canvas; "this style" with nodes selected built a new subject; preferences stated earlier in a conversation were forgotten.
+- **Saving** — A save kept a ref to a file that was not in the folder and dropped the media; a failed write truncated the previous save; a slow load or save landed on the canvas that replaced it; media replaced during a save came back on reopen; saving into another folder lost live video and 3D.
+- **Runs** — A stopped run could overwrite or end the run after it; a run started while a workflow loaded survived the load; two branches fed from one router lost the second's data; a connected negative prompt replaced the prompt.
+- **Media** — An upload lands only on the node and canvas that started it; a re-run video edit no longer kills a copy of its output; media copied between tabs survives closing the source tab; the gallery's detail view matches the history viewer and its close button can be clicked.
+- **Models** — A string setting like `video_size` is no longer offered as a video input (#135); a Comfy Router busy status is not a failed run; a sentinel-or-range setting keeps its range.
+- **Noodles** — A newly hidden connection inherits the label its handle's other hidden connections share; hidden stubs stack down the node side instead of overlapping.
+- **Canvas** — A workflow opened from a file starts at its first node instead of an empty corner of its bounding box; the multi-select bar lives on the canvas, pans with the nodes and is never hidden under the tab strip.
+
+## [1.10.0] - 2026-09-24
+
+The ComfyUI provider release. One Comfy key now runs the partner models Comfy
+hosts, through Comfy Router, alongside the other providers.
+
+### Added
+
+- **ComfyUI as a model provider** — A `comfy` provider, shown as ComfyUI, backed by [Comfy Router](https://docs.comfy.org/development/comfy-router/quickstart). Enter a key from platform.comfy.org in Settings → Providers, or leave it empty and the Comfy Cloud key from the ComfyUI tab is used; `COMFY_API_KEY` works for `.env` setups too.
+- **159 image, video, audio and 3D models under one key** — Every media model the Router publishes a schema for, across 72 partner request formats: Black Forest Labs (FLUX.2, Kontext, Fill, Expand, Canny, Depth, Erase, try-on, FLUX 3 video), OpenAI GPT Image, Gemini and Imagen on Vertex, Veo, xAI Grok Imagine, ByteDance Seedream and Seedance, Kling (text, omni, avatar, lip-sync), Wan and HappyHorse, Qwen Image, Recraft, Ideogram, Krea, Luma, Runway, LTX, MiniMax, Moonvalley, Bria image and video edits, Freepik enhancers, Meshy 3D, HeyGen and ByteDance voices, and more. The browser lists every one the Router currently serves.
+- **Settings from the Router's own schemas** — Each model's controls (values, ranges, defaults, descriptions) come from the schema the Router validates requests against, fetched live and cached, so they cannot drift from what the Router accepts.
+- **Every input a model takes** — Masks, last frames, reference and garment images, video and audio inputs get their own handles. Media a partner only accepts as a URL is uploaded to Comfy storage first.
+- **Choose who serves a model** — Models the Router can also run through fal, Higgsfield, Runware or WaveSpeed get a Model Provider setting on the node, read from the model's schema. Media goes by URL to an alternate provider, and a provider that refuses a setting says which one.
+- **Queued runs** — Every Comfy Router job goes through the Router queue with an idempotency key and is polled the way Kie jobs are, so long video generations survive connection limits. The Router's `Retry-After` hint now sets the poll interval, capped at 60 seconds.
+
+### Changed
+
+- **Poller honours server hints** — The client poller used by async providers waits as long as the server suggests before its own 3 to 8 second ramp, bounded by the overall timeout.
+- **Large outputs stream to a bound** — Video and audio results above 20MB are returned as a URL without being buffered; images are always inlined; 3D models come back as their URL.
+
+### Notes
+
+Comfy Router returns each partner's native response, so each request format is
+described once, as data (`src/lib/providers/comfyRouter/families.json`): a
+request template, the media each handle carries and how it is encoded, and
+where the output or the partner's error sits in the response. A schema check
+validates every bound model's request against the published schema, and
+`npm run comfy:router-sync` reports Router models that are new since the last
+sync. Text models and provider-hosted aliases without a published schema are
+not offered; some partners (ElevenLabs on some accounts) must be enabled for
+the Comfy account before they run.
+
 ## [1.9.0] - 2026-08-06
 
 The ComfyUI release. A ComfyUI workflow becomes a node on the canvas, wired to

@@ -137,6 +137,26 @@ describe("hasNonGeminiProviders", () => {
     expect(hasNonGeminiProviders(nodes)).toBe(true);
   });
 
+  it("should return true for nanoBanana node with comfy provider", () => {
+    const nodes: WorkflowNode[] = [
+      {
+        id: "1",
+        type: "nanoBanana",
+        position: { x: 0, y: 0 },
+        data: {
+          model: "nano-banana",
+          resolution: "1K",
+          selectedModel: {
+            provider: "comfy",
+            modelId: "black-forest-labs/flux-2-pro",
+            displayName: "FLUX.2 Pro",
+          },
+        },
+      },
+    ];
+    expect(hasNonGeminiProviders(nodes)).toBe(true);
+  });
+
   it("should return true for generateVideo node with non-Gemini provider", () => {
     const nodes: WorkflowNode[] = [
       {
@@ -325,5 +345,30 @@ describe("calculatePredictedCost - nano-banana-2-lite", () => {
 
     // nano-banana-2-lite is 1K only: flat $0.034 even if a stale resolution is set
     expect(result.totalCost).toBeCloseTo(0.034);
+  });
+});
+
+describe("calculatePredictedCost - nano-banana-2.1", () => {
+  it.each([["1K", 0.0336], ["2K", 0.0504], ["4K", 0.113]] as const)("prices nano-banana-2.1 at %s", (resolution, price) => {
+    const nodes = [
+      { id: "1", type: "nanoBanana", position: { x: 0, y: 0 }, data: { model: "nano-banana-2.1", resolution } },
+    ] as WorkflowNode[];
+
+    const result = calculatePredictedCost(nodes);
+
+    expect(result.breakdown[0].modelId).toBe("nano-banana-2.1");
+    expect(result.breakdown[0].unitCost).toBeCloseTo(price);
+    expect(result.unknownPricingCount).toBe(0);
+  });
+});
+
+describe("GPT Image 2.5 predictions", () => {
+  it("reports unknown price instead of inheriting the node's legacy Gemini model price", () => {
+    const result = calculatePredictedCost([{
+      id: "openai", type: "nanoBanana", position: { x: 0, y: 0 },
+      data: { model: "nano-banana-pro", selectedModel: { provider: "openai", modelId: "gpt-image-2.5-flare", displayName: "GPT Image 2.5 Flare" } },
+    }] as WorkflowNode[]);
+    expect(result.unknownPricingCount).toBe(1);
+    expect(result.breakdown[0].unitCost).toBeNull();
   });
 });

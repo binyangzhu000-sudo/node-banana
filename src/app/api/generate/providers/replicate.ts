@@ -5,6 +5,7 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
+import { fetchWithRetry } from "@/lib/providers/retry";
 import { validateMediaUrl } from "@/utils/urlValidation";
 import {
   getParameterTypesFromSchema,
@@ -68,6 +69,12 @@ export async function generateWithReplicate(
   // Get schema for type coercion and input mapping
   const schema = modelData.latest_version?.openapi_schema as Record<string, unknown> | undefined;
   const parameterTypes = getParameterTypesFromSchema(schema);
+  const parameters = coerceParameterTypes(input.parameters, parameterTypes);
+  // Replicate rejects null arrays even for schemas advertising nullable:true
+  // (e.g. Reve 2.1). Treat saved null defaults as unset; keep real arrays intact.
+  for (const [key, value] of Object.entries(parameters)) {
+    if (value === null && parameterTypes[key] === "array") delete parameters[key];
+  }
 
   // Build input for the prediction - parameters are applied per-path below to avoid double-spreading
   const predictionInput: Record<string, unknown> = {};
@@ -75,7 +82,7 @@ export async function generateWithReplicate(
   // Add dynamic inputs if provided (these come from schema-mapped connections)
   if (hasDynamicInputs) {
     // Apply coerced parameters first, then dynamic inputs override
-    Object.assign(predictionInput, coerceParameterTypes(input.parameters, parameterTypes));
+    Object.assign(predictionInput, parameters);
     const { paramMap, schemaArrayParams } = getInputMappingFromSchema(schema);
 
     // Apply array wrapping based on schema type
@@ -101,6 +108,13 @@ export async function generateWithReplicate(
     // Fallback: use schema to map generic input names to model-specific parameter names
     const { paramMap, arrayParams } = getInputMappingFromSchema(schema);
 
+    // Apply saved settings first so live connections cannot be overwritten by
+    // stale defaults left in workflows created before a schema was recognised.
+    for (const [key, value] of Object.entries(parameters)) {
+      const mappedKey = paramMap[key] || key;
+      predictionInput[mappedKey] = value;
+    }
+
     // Map prompt input
     if (input.prompt) {
       const promptParam = paramMap.prompt || "prompt";
@@ -116,17 +130,10 @@ export async function generateWithReplicate(
         predictionInput[imageParam] = input.images[0];
       }
     }
-
-    // Map any parameters that might need renaming (use coerced values)
-    const coercedParams = coerceParameterTypes(input.parameters, parameterTypes);
-    for (const [key, value] of Object.entries(coercedParams)) {
-      const mappedKey = paramMap[key] || key;
-      predictionInput[mappedKey] = value;
-    }
   }
 
   // Create a prediction
-  const createResponse = await fetch(`${REPLICATE_API_BASE}/predictions`, {
+  const createResponse = await fetchWithRetry(`${REPLICATE_API_BASE}/predictions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

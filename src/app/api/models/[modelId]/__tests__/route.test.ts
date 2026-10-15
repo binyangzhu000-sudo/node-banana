@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { primeRouterSchema } from "@/lib/providers/comfyRouter/catalog";
+import type { JsonSchema, OpenApi } from "@/lib/providers/comfyRouter/schema";
 import { NextRequest } from "next/server";
+import reveSchema from "@/lib/providers/__fixtures__/reve-2.1-schema.json";
 
 // Mock the route module to test internal functions
 // We'll test via the GET endpoint behavior
@@ -101,6 +104,16 @@ describe("/api/models/[modelId] schema endpoint", () => {
   });
 
   describe("isImageInput classification", () => {
+    it("exposes Reve 2.1 reference_images as an image handle instead of a null setting", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ latest_version: { openapi_schema: reveSchema } }) });
+      const modelId = `reve/reve-2.1-${testCounter}`;
+      const response = await GET(createMockSchemaRequest(modelId, "replicate"), { params: Promise.resolve({ modelId }) });
+      const data = await response.json();
+      expect(response.status).toBe(200);
+      expect(data.inputs).toContainEqual(expect.objectContaining({ name: "reference_images", type: "image", isArray: true, required: false }));
+      expect(data.parameters.map((param: { name: string }) => param.name)).not.toContain("reference_images");
+    });
+
     it("should NOT classify boolean params with 'image' in name as image inputs", async () => {
       // This was the original bug: sequential_image_generation (boolean) was misclassified
       mockFetch.mockResolvedValueOnce(
@@ -885,5 +898,147 @@ describe("/api/models/[modelId] schema endpoint", () => {
       expect(byName.last_frame).toBe("image");
       expect(byName.video).toBe("video");
     });
+  });
+
+  describe("Comfy Router provider", () => {
+    /** The smallest published schema: one request body with these properties. */
+    function doc(id: string, properties: Record<string, JsonSchema>, required: string[] = ["prompt"]): OpenApi {
+      return {
+        paths: { [`/v2/models/${id}`]: { post: { requestBody: { content: { "application/json": { schema: { type: "object", required, properties } } } } } } },
+      };
+    }
+
+    beforeEach(() => {
+      primeRouterSchema(
+        "bfl/flux-2-pro",
+        doc("bfl/flux-2-pro", {
+          prompt: { type: "string" },
+          input_image: { type: "string" },
+          width: { type: "integer", minimum: 256, maximum: 2048, default: 1024 },
+          height: { type: "integer", minimum: 256, maximum: 2048, default: 1024 },
+          output_format: { type: "string", enum: ["jpeg", "png"], default: "jpeg" },
+          seed: { type: "integer", description: "Seed for reproducibility." },
+        })
+      );
+      primeRouterSchema(
+        "veo/veo-3.1-generate-001",
+        doc("veo/veo-3.1-generate-001", {
+          instances: { type: "array" },
+          parameters: {
+            type: "object",
+            properties: {
+              aspectRatio: { type: "string", enum: ["16:9", "9:16"] },
+              durationSeconds: { type: "integer" },
+              resolution: { type: "string", enum: ["720p", "1080p", "4k"] },
+            },
+          },
+        }, ["instances"])
+      );
+    });
+
+    it("should serve settings from the published schema for a URL-encoded id", async () => {
+      const request = createMockSchemaRequest("bfl/flux-2-pro", "comfy");
+      const response = await GET(request, { params: Promise.resolve({ modelId: "bfl%2Fflux-2-pro" }) });
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+
+      const width = data.parameters.find((p: { name: string }) => p.name === "width");
+      expect(width).toMatchObject({ type: "integer", minimum: 256, maximum: 2048, default: 1024 });
+      // Media and prompt fields are handles, not settings
+      const parameterNames = data.parameters.map((p: { name: string }) => p.name);
+      expect(parameterNames).toEqual(["width", "height", "output_format", "seed"]);
+
+      const promptInput = data.inputs.find((i: { name: string }) => i.name === "prompt");
+      expect(promptInput).toMatchObject({ type: "text", required: true });
+      const imageInput = data.inputs.find((i: { name: string }) => i.name === "image");
+      expect(imageInput).toMatchObject({ type: "image", required: false, isArray: true });
+
+      // Served from the schema cache
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("should return 404 for an id the app cannot drive", async () => {
+      const request = createMockSchemaRequest("nobody/no-such-model", "comfy");
+      const response = await GET(request, { params: Promise.resolve({ modelId: "nobody%2Fno-such-model" }) });
+      const data = await response.json();
+
+      expect(response.status).toBe(404);
+      expect(data).toEqual({ success: false, error: "Unknown Comfy Router model" });
+    });
+
+    it("should serve a video model's handles and narrow its settings", async () => {
+      const request = createMockSchemaRequest("veo/veo-3.1-generate-001", "comfy");
+      const response = await GET(request, { params: Promise.resolve({ modelId: "veo%2Fveo-3.1-generate-001" }) });
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.inputs.map((i: { name: string }) => i.name)).toEqual(["prompt", "image", "last_frame"]);
+      // The schema's free integer is narrowed to the durations Veo renders
+      expect(data.parameters.find((p: { name: string }) => p.name === "durationSeconds")).toMatchObject({ enum: [4, 6, 8], default: 8 });
+    });
+  });
+});
+
+describe("OpenAI GPT Image 2.5 schemas", () => {
+  it.each(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08"])("exposes supported settings for %s", async modelId => {
+    const response = await GET(createMockSchemaRequest(modelId, "openai"), { params: Promise.resolve({ modelId }) });
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "quality", enum: ["auto", "low", "medium", "high", "xhigh", "max"] }),
+      expect.objectContaining({ name: "size", type: "string", default: "auto" }),
+      expect.objectContaining({ name: "output_format", enum: ["png", "jpeg", "webp"] }),
+    ]));
+    expect(data.inputs).toEqual(expect.arrayContaining([expect.objectContaining({ name: "image", isArray: true })]));
+  });
+
+  it("does not expose 2.5 quality settings on older models", async () => {
+    const modelId = "gpt-image-1";
+    const response = await GET(createMockSchemaRequest(modelId, "openai"), { params: Promise.resolve({ modelId }) });
+    const data = await response.json();
+    expect(data.parameters.find((p: { name: string }) => p.name === "quality").enum).not.toContain("max");
+  });
+});
+
+describe("Gemini image schemas", () => {
+  const extended = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
+
+  it.each([
+    ["nano-banana", ["aspectRatio"], undefined],
+    ["nano-banana-2-lite", ["aspectRatio"], undefined],
+    ["nano-banana-pro", ["aspectRatio", "resolution", "useGoogleSearch"], ["1K", "2K", "4K"]],
+    ["nano-banana-2", ["aspectRatio", "resolution", "useGoogleSearch", "useImageSearch"], ["512", "1K", "2K", "4K"]],
+    ["nano-banana-2.1", ["aspectRatio", "resolution", "useGoogleSearch", "useImageSearch"], ["1K", "2K", "4K"]],
+  ])("lists %s's settings", async (modelId, names, resolutions) => {
+    const response = await GET(createMockSchemaRequest(modelId as string, "gemini"), { params: Promise.resolve({ modelId: modelId as string }) });
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.parameters.map((p: { name: string }) => p.name)).toEqual(names);
+    expect(data.parameters.find((p: { name: string }) => p.name === "resolution")?.enum).toEqual(resolutions);
+    if (modelId === "nano-banana-2" || modelId === "nano-banana-2.1") {
+      expect(data.parameters[0].enum).toEqual(extended);
+    }
+    expect(data.inputs.map((i: { name: string }) => i.name)).toEqual(["prompt", "image"]);
+  });
+});
+
+describe("Gemini Omni schemas", () => {
+  it.each(["gemini-omni-1.1-flash", "gemini-omni-flash-preview"])("exposes multimodal inputs and supported video settings for %s", async (modelId) => {
+    const response = await GET(createMockSchemaRequest(modelId, "gemini"), { params: Promise.resolve({ modelId }) });
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "resolution", enum: ["360p", "720p", "1080p", "4k"] }),
+      expect.objectContaining({ name: "task", enum: expect.arrayContaining(["auto", "edit", "extend"]) }),
+    ]));
+    expect(data.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "image", type: "image", isArray: true }),
+      expect.objectContaining({ name: "video", type: "video" }),
+      expect.objectContaining({ name: "audio", type: "audio" }),
+      expect.objectContaining({ name: "prompt", type: "text" }),
+    ]));
+    expect(data.parameters.some((p: { name: string }) => p.name === "durationSeconds")).toBe(false);
   });
 });

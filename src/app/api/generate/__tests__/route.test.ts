@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { primeRouterSchema } from "@/lib/providers/comfyRouter/catalog";
 import { NextRequest } from "next/server";
 
 // Use vi.hoisted to define mocks that work with hoisted vi.mock
@@ -710,6 +711,36 @@ describe("/api/generate route", () => {
       expect(mockGenerateContent).toHaveBeenCalledWith(
         expect.objectContaining({
           model: "gemini-3.1-flash-lite-image",
+        })
+      );
+    });
+
+    it("should send nano-banana-2.1 to gemini-nano-banana-2.1 with its size and both search types", async () => {
+      process.env.GEMINI_API_KEY = "test-gemini-key";
+
+      mockGenerateContent.mockResolvedValueOnce(createGeminiImageResponse());
+
+      const request = createMockPostRequest({
+        prompt: "A panoramic harbour banner",
+        model: "nano-banana-2.1",
+        aspectRatio: "8:1",
+        resolution: "4K",
+        useGoogleSearch: true,
+        useImageSearch: true,
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "gemini-nano-banana-2.1",
+          config: expect.objectContaining({
+            imageConfig: { aspectRatio: "8:1", imageSize: "4K" },
+            tools: [{ googleSearch: { searchTypes: { webSearch: {}, imageSearch: {} } } }],
+          }),
         })
       );
     });
@@ -1911,6 +1942,33 @@ describe("/api/generate route", () => {
       global.fetch = originalFetch;
     });
 
+    it("returns GPT Image 2.5 output format and usage metadata", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({
+        data: [{ b64_json: "aW1hZ2U=" }], output_format: "webp", size: "1536x864",
+        usage: { input_tokens_details: { text_tokens: 100, image_tokens: 250 }, output_tokens: 1000 },
+      }) });
+      const response = await POST(createMockPostRequest({
+        prompt: "A red house",
+        selectedModel: { provider: "openai", modelId: "gpt-image-2.5-flare", displayName: "GPT Image 2.5 Flare" },
+        parameters: { quality: "max", size: "1536x864", output_format: "webp" },
+      }, { "X-OpenAI-API-Key": "test-key" }));
+      const data = await response.json();
+      expect(response.status).toBe(200);
+      expect(data.image).toBe("data:image/webp;base64,aW1hZ2U=");
+      expect(data.generation).toMatchObject({ modelId: "gpt-image-2.5-flare", size: "1536x864", usage: { textInputTokens: 100, imageInputTokens: 250, imageOutputTokens: 1000 } });
+    });
+
+    it("rejects invalid custom dimensions before contacting OpenAI", async () => {
+      const response = await POST(createMockPostRequest({
+        prompt: "A red house",
+        selectedModel: { provider: "openai", modelId: "gpt-image-2.5-sunburst", displayName: "GPT Image 2.5 Sunburst" },
+        parameters: { size: "512x512" },
+      }, { "X-OpenAI-API-Key": "test-key" }));
+      expect(response.status).toBe(400);
+      expect((await response.json()).errorCode).toBe("invalid_parameters");
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it("should generate image successfully via OpenAI text-to-image", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -2038,7 +2096,7 @@ describe("/api/generate route", () => {
       const response = await POST(request);
       const data = await response.json();
 
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(429);
       expect(data.success).toBe(false);
       expect(data.error).toContain("Rate limit exceeded");
     });
@@ -2094,7 +2152,7 @@ describe("/api/generate route", () => {
       const response = await POST(request);
       const data = await response.json();
 
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(502);
       expect(data.success).toBe(false);
       // No raw HTML leaks through; message is concise and actionable.
       expect(data.error).not.toContain("<!DOCTYPE");
@@ -3210,6 +3268,169 @@ describe("/api/generate route", () => {
       expect(resultKeysLog![0]).toContain("another");
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe("Comfy provider", () => {
+    const mockFetch = vi.fn();
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      global.fetch = mockFetch;
+      mockFetch.mockReset();
+      // The key is resolved from the header, then either Comfy env var
+      delete process.env.COMFY_API_KEY;
+      delete process.env.COMFY_CLOUD_API_KEY;      // Settings come from the model's published schema; serve a small one from the cache
+      primeRouterSchema("bfl/flux-2-pro", {
+        paths: {
+          "/v2/models/bfl/flux-2-pro": {
+            post: {
+              requestBody: {
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      required: ["prompt"],
+                      properties: { prompt: { type: "string" }, width: { type: "integer" }, height: { type: "integer" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    const selectedModel = {
+      provider: "comfy",
+      modelId: "bfl/flux-2-pro",
+      displayName: "FLUX.2 Pro",
+    };
+
+    it("should return 401 when no Comfy API key is configured", async () => {
+      const request = createMockPostRequest({
+        prompt: "A test prompt",
+        selectedModel,
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(data.success).toBe(false);
+      expect(data.error).toBe(
+        "Comfy API key not configured. Add COMFY_API_KEY to .env.local or configure in Settings."
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("should return 400 when selectedModel is incomplete", async () => {
+      const request = createMockPostRequest(
+        {
+          prompt: "A test prompt",
+          selectedModel: { provider: "comfy", modelId: "bfl/flux-2-pro" },
+        },
+        { "X-Comfy-Router-Key": "test-comfy-key" }
+      );
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain("selectedModel with modelId and displayName is required");
+    });
+
+    it("should submit the task and return a comfy polling envelope", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        json: () => Promise.resolve({ request_id: "req_1", status: "IN_QUEUE" }),
+      });
+
+      const request = createMockPostRequest(
+        {
+          prompt: "A test prompt",
+          selectedModel,
+          parameters: { width: 1024, height: 768 },
+          dynamicInputs: { image: "", last_frame: "" },
+        },
+        { "X-Comfy-Router-Key": "test-comfy-key" }
+      );
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toMatchObject({
+        success: true,
+        polling: true,
+        pollProvider: "comfy",
+        taskId: "req_1",
+        pollModelId: "bfl/flux-2-pro",
+        pollModelName: "FLUX.2 Pro",
+        pollMediaType: "image",
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe("https://api.comfy.org/v2/models/bfl/flux-2-pro/requests");
+      expect(init.method).toBe("POST");
+      expect(init.headers["X-API-Key"]).toBe("test-comfy-key");
+      expect(init.headers["Content-Type"]).toBe("application/json");
+      expect(init.headers["Idempotency-Key"]).toEqual(expect.any(String));
+      expect(init.headers["Idempotency-Key"].length).toBeGreaterThan(0);
+
+      const body = JSON.parse(init.body);
+      expect(body.prompt).toBe("A test prompt");
+      expect(body.width).toBe(1024);
+      expect(body.height).toBe(768);
+      // Empty dynamic inputs are filtered before the body is built
+      expect(body).not.toHaveProperty("input_image");
+    });
+
+    it("should fall back to COMFY_API_KEY from the environment", async () => {
+      process.env.COMFY_API_KEY = "env-comfy-key";
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Headers(),
+        json: () => Promise.resolve({ request_id: "req_2", status: "IN_QUEUE" }),
+      });
+
+      const request = createMockPostRequest({ prompt: "A test prompt", selectedModel });
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.taskId).toBe("req_2");
+      expect(mockFetch.mock.calls[0][1].headers["X-API-Key"]).toBe("env-comfy-key");
+    });
+
+    it("should return 500 with the Router's message when submission is rejected", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 402,
+        headers: new Headers(),
+        json: () => Promise.resolve({ detail: "Insufficient credits", error_type: "payment_required" }),
+      });
+
+      const request = createMockPostRequest(
+        { prompt: "A test prompt", selectedModel },
+        { "X-Comfy-Router-Key": "test-comfy-key" }
+      );
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(500);
+      expect(data.success).toBe(false);
+      expect(data.error).toBe("Insufficient credits (payment_required)");
     });
   });
 });

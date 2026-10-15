@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildGenerateHeaders, buildLlmHeaders } from "../buildApiHeaders";
+import { buildGenerateHeaders, buildLlmHeaders, buildModelsApiHeaders } from "../buildApiHeaders";
 import type { ProviderSettings } from "@/types";
 
 function makeSettings(overrides: Partial<Record<string, { apiKey: string | null }>> = {}): ProviderSettings {
@@ -10,6 +10,7 @@ function makeSettings(overrides: Partial<Record<string, { apiKey: string | null 
     kie: { id: "kie", name: "Kie.ai", enabled: true, apiKey: null },
     wavespeed: { id: "wavespeed", name: "WaveSpeed", enabled: true, apiKey: null },
     openai: { id: "openai", name: "OpenAI", enabled: true, apiKey: null },
+    comfy: { id: "comfy", name: "ComfyUI", enabled: true, apiKey: null },
   };
   for (const [key, val] of Object.entries(overrides)) {
     if (defaults[key]) {
@@ -55,6 +56,12 @@ describe("buildGenerateHeaders", () => {
     expect(headers["X-WaveSpeed-Key"]).toBe("ws-key");
   });
 
+  it("should add Comfy Router key header", () => {
+    const settings = makeSettings({ comfy: { apiKey: "comfyui-key" } });
+    const headers = buildGenerateHeaders("comfy", settings);
+    expect(headers["X-Comfy-Router-Key"]).toBe("comfyui-key");
+  });
+
   it("should not add header when API key is null", () => {
     const headers = buildGenerateHeaders("gemini", makeSettings());
     expect(headers["X-Gemini-API-Key"]).toBeUndefined();
@@ -92,5 +99,40 @@ describe("buildLlmHeaders", () => {
   it("should handle unknown LLM provider gracefully", () => {
     const headers = buildLlmHeaders("unknown", makeSettings());
     expect(headers).toEqual({ "Content-Type": "application/json" });
+  });
+});
+
+describe("buildModelsApiHeaders", () => {
+  it("emits the models routes' header name for every key present", () => {
+    expect(
+      buildModelsApiHeaders({
+        replicate: "rep",
+        fal: "fal",
+        kie: "kie",
+        wavespeed: "ws",
+        openai: "oai",
+        gemini: "gem",
+        comfy: "comfyui-key",
+      })
+    ).toEqual({
+      "X-Replicate-Key": "rep",
+      "X-Fal-Key": "fal",
+      "X-Kie-Key": "kie",
+      "X-WaveSpeed-Key": "ws",
+      "X-OpenAI-API-Key": "oai",
+      "X-Gemini-API-Key": "gem",
+      "X-Comfy-Router-Key": "comfyui-key",
+    });
+  });
+
+  it("leaves out keys that are missing, null or empty", () => {
+    expect(buildModelsApiHeaders({ replicate: null, fal: "", kie: undefined, openai: "oai" })).toEqual({
+      "X-OpenAI-API-Key": "oai",
+    });
+    expect(buildModelsApiHeaders({})).toEqual({});
+  });
+
+  it("does not add Content-Type (the models routes are GETs)", () => {
+    expect(buildModelsApiHeaders({ gemini: "gem" })).not.toHaveProperty("Content-Type");
   });
 });

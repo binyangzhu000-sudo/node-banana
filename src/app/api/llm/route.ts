@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchWithRetry, retryTransient } from "@/lib/providers/retry";
 import { GoogleGenAI } from "@google/genai";
-import { LLMGenerateRequest, LLMGenerateResponse, LLMModelType } from "@/types";
+import { LLMGenerateRequest, LLMGenerateResponse } from "@/types";
+import { resolveLLMModel } from "@/lib/llm/catalog";
 import { logger } from "@/utils/logger";
 
 export const maxDuration = 60; // 1 minute timeout
@@ -10,28 +12,9 @@ function generateRequestId(): string {
   return `llm-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// Map model types to actual API model IDs
-const GOOGLE_MODEL_MAP: Record<string, string> = {
-  "gemini-2.5-flash": "gemini-2.5-flash",
-  "gemini-3-flash-preview": "gemini-3-flash-preview",
-  "gemini-3-pro-preview": "gemini-3-pro-preview",
-  "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
-};
-
-const OPENAI_MODEL_MAP: Record<string, string> = {
-  "gpt-4.1-mini": "gpt-4.1-mini",
-  "gpt-4.1-nano": "gpt-4.1-nano",
-};
-
-const ANTHROPIC_MODEL_MAP: Record<string, string> = {
-  "claude-sonnet-4.5": "claude-sonnet-4-5-20250929",
-  "claude-haiku-4.5": "claude-haiku-4-5-20251001",
-  "claude-opus-4.6": "claude-opus-4-6",
-};
-
 async function generateWithGoogle(
   prompt: string,
-  model: LLMModelType,
+  model: string,
   temperature: number,
   maxTokens: number,
   images?: string[],
@@ -46,7 +29,7 @@ async function generateWithGoogle(
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const modelId = GOOGLE_MODEL_MAP[model];
+  const modelId = model;
 
   logger.info('api.llm', 'Calling Google AI API', {
     requestId,
@@ -87,14 +70,14 @@ async function generateWithGoogle(
   }
 
   const startTime = Date.now();
-  const response = await ai.models.generateContent({
+  const response = await retryTransient(() => ai.models.generateContent({
     model: modelId,
     contents,
     config: {
       temperature,
       maxOutputTokens: maxTokens,
     },
-  });
+  }), { label: `Gemini ${modelId}` });
   const duration = Date.now() - startTime;
 
   // Use the convenient .text property that concatenates all text parts
@@ -115,7 +98,7 @@ async function generateWithGoogle(
 
 async function generateWithOpenAI(
   prompt: string,
-  model: LLMModelType,
+  model: string,
   temperature: number,
   maxTokens: number,
   images?: string[],
@@ -129,7 +112,7 @@ async function generateWithOpenAI(
     throw new Error("OPENAI_API_KEY not configured. Add it to .env.local or configure in Settings.");
   }
 
-  const modelId = OPENAI_MODEL_MAP[model];
+  const modelId = model;
 
   logger.info('api.llm', 'Calling OpenAI API', {
     requestId,
@@ -155,7 +138,7 @@ async function generateWithOpenAI(
   }
 
   const startTime = Date.now();
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -199,7 +182,7 @@ async function generateWithOpenAI(
 
 async function generateWithAnthropic(
   prompt: string,
-  model: LLMModelType,
+  model: string,
   temperature: number,
   maxTokens: number,
   images?: string[],
@@ -212,7 +195,7 @@ async function generateWithAnthropic(
     throw new Error("ANTHROPIC_API_KEY not configured. Add it to .env.local or configure in Settings.");
   }
 
-  const modelId = ANTHROPIC_MODEL_MAP[model];
+  const modelId = model;
 
   logger.info('api.llm', 'Calling Anthropic API', {
     requestId,
@@ -246,7 +229,7 @@ async function generateWithAnthropic(
   content.push({ type: "text", text: prompt });
 
   const startTime = Date.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -327,20 +310,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let text: string;
-
-    if (provider === "google") {
-      text = await generateWithGoogle(prompt, model, temperature, maxTokens, images, requestId, geminiApiKey);
-    } else if (provider === "openai") {
-      text = await generateWithOpenAI(prompt, model, temperature, maxTokens, images, requestId, openaiApiKey);
-    } else if (provider === "anthropic") {
-      text = await generateWithAnthropic(prompt, model, temperature, maxTokens, images, requestId, anthropicApiKey);
-    } else {
+    if (provider !== "google" && provider !== "openai" && provider !== "anthropic") {
       logger.warn('api.llm', 'Unknown provider requested', { requestId, provider });
       return NextResponse.json<LLMGenerateResponse>(
         { success: false, error: `Unknown provider: ${provider}` },
         { status: 400 }
       );
+    }
+
+    // Only ids the catalogue knows run; a retired id is moved to its replacement.
+    const resolved = resolveLLMModel(provider, model);
+    if (!resolved) {
+      logger.warn('api.llm', 'Unknown model requested', { requestId, provider, model });
+      return NextResponse.json<LLMGenerateResponse>(
+        { success: false, error: `Unknown model "${model}" for provider ${provider}` },
+        { status: 400 }
+      );
+    }
+    if (resolved.substitution) {
+      logger.warn('api.llm', 'Retired model replaced', { requestId, from: resolved.substitution.from, to: resolved.id });
+    }
+
+    let text: string;
+
+    if (provider === "google") {
+      text = await generateWithGoogle(prompt, resolved.apiId, temperature, maxTokens, images, requestId, geminiApiKey);
+    } else if (provider === "openai") {
+      text = await generateWithOpenAI(prompt, resolved.apiId, temperature, maxTokens, images, requestId, openaiApiKey);
+    } else {
+      text = await generateWithAnthropic(prompt, resolved.apiId, temperature, maxTokens, images, requestId, anthropicApiKey);
     }
 
     logger.info('api.llm', 'LLM generation successful', {
@@ -351,6 +349,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<LLMGenerateResponse>({
       success: true,
       text,
+      model: resolved.id,
+      ...(resolved.substitution && { note: resolved.substitution.note }),
     });
   } catch (error) {
     logger.error('api.error', 'LLM generation error', { requestId }, error instanceof Error ? error : undefined);

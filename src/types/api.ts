@@ -20,8 +20,27 @@ export interface GenerateRequest {
   mediaType?: "image" | "video" | "3d" | "audio"; // Indicates expected output type for provider routing
 }
 
+/** Optional metadata returned by image providers and retained with generated images. */
+export interface ImageGenerationMetadata {
+  modelId: string;
+  parameters: Record<string, unknown>;
+  size?: string;
+  outputFormat?: "png" | "jpeg" | "webp";
+  quality?: string;
+  background?: string;
+  usage?: {
+    textInputTokens: number;
+    imageInputTokens: number;
+    imageOutputTokens: number;
+  };
+  cost?: { amount: number; currency: "USD"; estimated: boolean };
+}
+
 export interface GenerateResponse {
   success: boolean;
+  generation?: ImageGenerationMetadata;
+  errorCode?: string;
+  retryAfter?: string;
   image?: string;
   video?: string;
   videoUrl?: string; // For large videos, return URL directly
@@ -37,6 +56,7 @@ export interface GenerateResponse {
   pollModelId?: string; // model ID for result handling
   pollModelName?: string; // display name for error messages
   pollMediaType?: string; // 'video' | 'image' | 'audio' — for result handling
+  retryAfterMs?: number; // server's suggested wait before the next poll (Comfy Router's Retry-After)
 }
 
 // API Request/Response types for LLM Text Generation
@@ -53,4 +73,8 @@ export interface LLMGenerateResponse {
   success: boolean;
   text?: string;
   error?: string;
+  /** The catalogue model id that ran, which differs from the request when a retired id was replaced. */
+  model?: string;
+  /** Explains a model replacement, for the node to show. */
+  note?: string;
 }

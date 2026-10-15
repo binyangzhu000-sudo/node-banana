@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ModelParameters } from "@/components/nodes/ModelParameters";
 import { ModelParameter } from "@/lib/providers/types";
+import { pickOption } from "@/test/dropdown";
 
 // Mock deduplicatedFetch to pass through to global fetch (avoids caching issues in tests)
 vi.mock("@/utils/deduplicatedFetch", () => ({
@@ -63,6 +64,21 @@ describe("ModelParameters", () => {
       return selector(defaultStoreState);
     });
     vi.stubGlobal("fetch", vi.fn());
+  });
+
+  it("shows OpenAI compression only for JPEG/WebP and flags transparent JPEG", async () => {
+    const { OPENAI_IMAGE_25_PARAMETERS } = await import("@/lib/providers/openaiImages");
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ parameters: OPENAI_IMAGE_25_PARAMETERS }),
+    } as Response);
+    const props = { ...defaultProps, provider: "openai" as const, modelId: "gpt-image-2.5-flare" };
+    const { rerender } = render(<ModelParameters {...props} parameters={{ size: "auto", output_format: "png" }} />);
+    await screen.findByLabelText("Output Format");
+    expect(screen.queryByLabelText("Compression")).toBeNull();
+    rerender(<ModelParameters {...props} parameters={{ size: "auto", output_format: "jpeg", background: "transparent" }} />);
+    expect(screen.getByLabelText("Compression")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("PNG or WebP");
   });
 
   describe("Initial Rendering", () => {
@@ -157,6 +173,45 @@ describe("ModelParameters", () => {
       await waitFor(() => {
         expect(container.firstChild).toBeNull();
       });
+    });
+  });
+
+  describe("Failed lookups", () => {
+    it("offers Retry after an error and asks again when pressed", async () => {
+      (global.fetch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ error: "fal.ai is rate limiting model lookups. Try again in a few seconds." }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ parameters: [createMockParameter({ name: "num_images", type: "integer", default: 1 })], inputs: [] }) });
+
+      render(<ModelParameters {...defaultProps} provider="fal" modelId="google/nano-banana-2-lite" />);
+
+      expect(await screen.findByText(/rate limiting/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+      await waitFor(() => expect(screen.getByText("Num Images")).toBeInTheDocument());
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(localStorage.getItem("node-banana-schema-cache") || "{}")["fal:google/nano-banana-2-lite"].parameters).toHaveLength(1);
+    });
+
+    it("never caches an empty schema, so the next mount asks again", async () => {
+      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, json: () => Promise.resolve({ parameters: [], inputs: [] }) });
+
+      const { unmount } = render(<ModelParameters {...defaultProps} />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+      expect(localStorage.getItem("node-banana-schema-cache")).toBeNull();
+      unmount();
+
+      render(<ModelParameters {...defaultProps} />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(2));
+    });
+
+    it("ignores an empty entry an older build cached", async () => {
+      localStorage.setItem("node-banana-schema-cache", JSON.stringify({ "replicate:test-model": { parameters: [], inputs: [], timestamp: Date.now() } }));
+      (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ parameters: [createMockParameter()], inputs: [] }) });
+
+      render(<ModelParameters {...defaultProps} />);
+
+      await waitFor(() => expect(screen.getByText("Test Param")).toBeInTheDocument());
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -336,7 +391,7 @@ describe("ModelParameters", () => {
       });
     });
 
-    it("should show min/max range in label", async () => {
+    it("should show min/max range in the label tooltip", async () => {
       (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         ok: true,
         json: () =>
@@ -355,7 +410,7 @@ describe("ModelParameters", () => {
       render(<ModelParameters {...defaultProps} />);
 
       await waitFor(() => {
-        expect(screen.getByText("(1-20)")).toBeInTheDocument();
+        expect(screen.getByText("Guidance Scale")).toHaveAttribute("title", expect.stringContaining("(1-20)"));
       });
     });
 
@@ -546,6 +601,7 @@ describe("ModelParameters", () => {
         expect(screen.getByRole("combobox")).toBeInTheDocument();
       });
 
+      fireEvent.click(screen.getByRole("combobox"));
       const options = screen.getAllByRole("option");
       expect(options.length).toBe(4);
       expect(options[0]).toHaveTextContent("Default");
@@ -581,9 +637,7 @@ describe("ModelParameters", () => {
         expect(screen.getByRole("combobox")).toBeInTheDocument();
       });
 
-      fireEvent.change(screen.getByRole("combobox"), {
-        target: { value: "DPM++" },
-      });
+      pickOption(screen.getByRole("combobox"), "DPM++");
 
       expect(onParametersChange).toHaveBeenCalledWith({ scheduler: "DPM++" });
     });
@@ -615,9 +669,7 @@ describe("ModelParameters", () => {
         expect(screen.getByRole("combobox")).toBeInTheDocument();
       });
 
-      fireEvent.change(screen.getByRole("combobox"), {
-        target: { value: "2" },
-      });
+      pickOption(screen.getByRole("combobox"), "2");
 
       // Should be number 2, not string "2"
       expect(onParametersChange).toHaveBeenCalledWith({ max_images: 2 });
@@ -650,9 +702,7 @@ describe("ModelParameters", () => {
         expect(screen.getByRole("combobox")).toBeInTheDocument();
       });
 
-      fireEvent.change(screen.getByRole("combobox"), {
-        target: { value: "2.5" },
-      });
+      pickOption(screen.getByRole("combobox"), "2.5");
 
       // Should be number 2.5, not string "2.5"
       expect(onParametersChange).toHaveBeenCalledWith({ guidance_scale: 2.5 });
@@ -687,9 +737,7 @@ describe("ModelParameters", () => {
       });
 
       // Select the "Default" option (empty value)
-      fireEvent.change(screen.getByRole("combobox"), {
-        target: { value: "" },
-      });
+      pickOption(screen.getByRole("combobox"), "");
 
       // Should remove the parameter (clear it)
       expect(onParametersChange).toHaveBeenCalledWith({});

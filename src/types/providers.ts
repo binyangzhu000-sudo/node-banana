@@ -6,7 +6,7 @@
  */
 
 // Provider Types for multi-provider support (image/video generation)
-export type ProviderType = "gemini" | "openai" | "anthropic" | "replicate" | "fal" | "kie" | "wavespeed" | "atlas";
+export type ProviderType = "gemini" | "openai" | "anthropic" | "replicate" | "fal" | "kie" | "wavespeed" | "comfy" | "atlas";
 
 // Model pricing info (stored when model is selected)
 export interface SelectedModelPricing {
@@ -35,20 +35,8 @@ export interface ProviderSettings {
   providers: Record<ProviderType, ProviderConfig>;
 }
 
-// LLM Provider Options
-export type LLMProvider = "google" | "openai" | "anthropic";
-
-// LLM Model Options
-export type LLMModelType =
-  | "gemini-2.5-flash"
-  | "gemini-3-flash-preview"
-  | "gemini-3-pro-preview"
-  | "gemini-3.1-pro-preview"
-  | "gpt-4.1-mini"
-  | "gpt-4.1-nano"
-  | "claude-opus-4.6"
-  | "claude-sonnet-4.5"
-  | "claude-haiku-4.5";
+// LLM provider and model ids live in the catalogue; re-exported so `@/types` stays the import path.
+export type { LLMProvider, LLMModelId, LLMModelType } from "@/lib/llm/catalog";
 
 // Recently used models tracking
 export interface RecentModel {

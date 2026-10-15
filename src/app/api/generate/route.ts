@@ -9,14 +9,25 @@
  * FAL.AI QUEUE API NOTE:
  * Uses generateWithFalQueue with async queue submission + polling.
  * Images are uploaded to fal CDN before submission to avoid payload size issues.
+ *
+ * POLLING PROVIDERS:
+ * Kie.ai and Comfy Router submit a task and return a polling envelope
+ * (pollProvider: 'kie' | 'comfy'); the client then calls /api/generate/poll.
+ *
+ * Headers:
+ *   - X-Gemini-API-Key, X-Replicate-API-Key, X-Fal-API-Key, X-Kie-Key,
+ *     X-WaveSpeed-Key, X-OpenAI-API-Key, X-Comfy-Router-Key
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GenerateRequest, GenerateResponse, ModelType, SelectedModel, ProviderType } from "@/types";
 import { GenerationInput, ModelCapability } from "@/lib/providers/types";
 import { generateWithGemini, generateWithGeminiVideo } from "./providers/gemini";
+import { generateWithGeminiOmni } from "./providers/gemini-omni";
+import { isGeminiOmni } from "@/lib/providers/geminiOmni";
 import { generateWithReplicate } from "./providers/replicate";
 import { generateWithFalQueue } from "./providers/fal";
 import { submitKieTask } from "./providers/kie";
+import { COMFY_ROUTER_HEADER, comfyRunsSynchronously, resolveComfyRouterKey, runComfySynchronously, submitComfyTask } from "./providers/comfy";
 import { generateWithWaveSpeed } from "./providers/wavespeed";
 import { generateWithAtlas } from "./providers/atlas";
 import { generateWithOpenAI } from "./providers/openai";
@@ -336,6 +347,98 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (provider === "comfy") {
+      if (!selectedModel?.modelId || !selectedModel?.displayName) {
+        return NextResponse.json<GenerateResponse>(
+          { success: false, error: "selectedModel with modelId and displayName is required for Comfy" },
+          { status: 400 }
+        );
+      }
+
+      // User-provided key takes precedence over env variables (COMFY_API_KEY, then COMFY_CLOUD_API_KEY)
+      const comfyApiKey = resolveComfyRouterKey(request.headers.get(COMFY_ROUTER_HEADER));
+      if (!comfyApiKey) {
+        return NextResponse.json<GenerateResponse>(
+          {
+            success: false,
+            error: "Comfy API key not configured. Add COMFY_API_KEY to .env.local or configure in Settings.",
+          },
+          { status: 401 }
+        );
+      }
+
+      // Keep images as-is; the family builder inlines base64 or data URLs per partner
+      const processedImages: string[] = images ? [...images] : [];
+
+      // Process dynamicInputs: filter empty values
+      let processedDynamicInputs: Record<string, string | string[]> | undefined = undefined;
+
+      if (dynamicInputs) {
+        processedDynamicInputs = {};
+        for (const key of Object.keys(dynamicInputs)) {
+          const value = dynamicInputs[key];
+
+          // Skip empty/null/undefined values
+          if (value === null || value === undefined || value === '') {
+            continue;
+          }
+
+          processedDynamicInputs[key] = value;
+        }
+      }
+
+      // Build generation input
+      const genInput: GenerationInput = {
+        model: {
+          id: selectedModel.modelId,
+          name: selectedModel.displayName,
+          provider: "comfy",
+          capabilities: capabilitiesForMediaType(mediaType),
+          description: null,
+        },
+        prompt: prompt || "",
+        images: processedImages,
+        parameters,
+        dynamicInputs: processedDynamicInputs,
+      };
+
+      // A binary partner (ElevenLabs) runs in one request: the queue cannot
+      // carry its bytes, so the finished output comes back here.
+      if (comfyRunsSynchronously(selectedModel.modelId)) {
+        const result = await runComfySynchronously(requestId, comfyApiKey, genInput);
+        if (!result.success) {
+          return NextResponse.json<GenerateResponse>({ success: false, error: result.error || "Generation failed" }, { status: 500 });
+        }
+        const output = result.outputs?.[0];
+        if (!output?.data && !output?.url) {
+          return NextResponse.json<GenerateResponse>({ success: false, error: "No output in generation result" }, { status: 500 });
+        }
+        return buildMediaResponse(output);
+      }
+
+      // Submit task and return immediately — client polls for completion
+      try {
+        const { taskId } = await submitComfyTask(requestId, comfyApiKey, genInput);
+        return NextResponse.json<GenerateResponse>({
+          success: true,
+          polling: true,
+          taskId,
+          pollProvider: 'comfy',
+          pollModelId: selectedModel.modelId,
+          pollModelName: selectedModel.displayName,
+          pollMediaType: mediaType || 'image',
+        });
+      } catch (error) {
+        return NextResponse.json<GenerateResponse>(
+          {
+            success: false,
+            error: error instanceof Error ? error.message : "Task submission failed",
+          },
+          { status: 500 }
+        );
+      }
+    }
+
     if (provider === "wavespeed") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
@@ -542,6 +645,7 @@ export async function POST(request: NextRequest) {
         images: processedImages,
         parameters,
         dynamicInputs: processedDynamicInputs,
+        signal: request.signal,
       };
 
       const result = await generateWithOpenAI(requestId, openaiApiKey, genInput);
@@ -551,8 +655,13 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             error: result.error || "Generation failed",
+            errorCode: result.errorCode,
+            retryAfter: result.retryAfter,
           },
-          { status: 500 }
+          {
+            status: result.statusCode || 500,
+            ...(result.retryAfter ? { headers: { "Retry-After": result.retryAfter } } : {}),
+          }
         );
       }
 
@@ -565,7 +674,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      return buildMediaResponse(output);
+      return buildMediaResponse(output, result.generation);
     }
 
     // Default: Use Gemini
@@ -600,6 +709,20 @@ export async function POST(request: NextRequest) {
         { success: false, error: "prompt must be a string" },
         { status: 400 }
       );
+    }
+
+    if (isGeminiOmni(selectedModel?.modelId)) {
+      const result = await generateWithGeminiOmni(
+        geminiApiKey, selectedModel!.modelId, resolvedPrompt || "", images || [], parameters || {}, dynamicInputs || {}, request.signal,
+      );
+      const output = result.outputs?.[0];
+      if (!result.success || !output) {
+        return NextResponse.json<GenerateResponse>(
+          { success: false, error: result.error || "Gemini Omni returned no video" },
+          { status: result.statusCode ?? 500 },
+        );
+      }
+      return buildMediaResponse(output);
     }
 
     // Check if this is a Veo video model request
